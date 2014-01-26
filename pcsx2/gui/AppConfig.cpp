@@ -72,6 +72,12 @@ namespace PathDefs
 			return retval;
 		}
 
+		const wxDirName& CheatsWS()
+		{
+			static const wxDirName retval(L"cheats_ws");
+			return retval;
+		}
+
 		const wxDirName& Langs()
 		{
 			static const wxDirName retval( L"Langs" );
@@ -682,6 +688,7 @@ AppConfig::FolderOptions::FolderOptions()
 	, MemoryCards	( PathDefs::GetMemoryCards() )
 	, Langs			( PathDefs::GetLangs() )
 	, Logs			( PathDefs::GetLogs() )
+	, CheatsWS      ( PathDefs::GetCheatsWS() )
 
 	, RunIso( PathDefs::GetDocuments() )			// raw default is always the Documents folder.
 	, RunELF( PathDefs::GetDocuments() )			// raw default is always the Documents folder.
