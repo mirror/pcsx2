@@ -183,7 +183,7 @@ namespace PathDefs
 
 	wxDirName GetCheatsWS()
 	{
-		return GetDocuments() + wxDirName( L"cheats_ws" );
+		return GetDocuments() + Base::CheatsWS();
 	}
 
 	wxDirName GetSavestates()
