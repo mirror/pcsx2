@@ -2301,13 +2301,14 @@ void GSState::GrowVertexBuffer()
 	GSVertex* vertex = (GSVertex*)_aligned_malloc(sizeof(GSVertex) * maxcount, 32);
 	uint32* index = (uint32*)_aligned_malloc(sizeof(uint32) * maxcount * 3, 32); // worst case is slightly less than vertex number * 3
 
-	if (!vertex || !index)
+	if(vertex == NULL || index == NULL)
 	{
 		printf("GSdx: failed to allocate %d bytes for verticles and %d for indices.\n", sizeof(GSVertex) * maxcount, sizeof(uint32) * maxcount * 3);
+
 		throw GSDXError();
 	}
 
-	if (m_vertex.buff != NULL)
+	if(m_vertex.buff != NULL)
 	{
 		memcpy(vertex, m_vertex.buff, sizeof(GSVertex) * m_vertex.tail);
 
