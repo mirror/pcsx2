@@ -117,7 +117,9 @@ class GSRendererCL : public GSRenderer
 			uint32 tw:3; // 50 (encodes values between 3 -> 10, texture cache makes sure it is at least 3)
 			uint32 lcm:1; // 53
 			uint32 mmin:2; // 54
-			uint32 notest:1; // 55 (no ztest, no atest, no date, no scissor test)
+			uint32 noscissor:1; // 55
+			uint32 tpsm:4; // 56
+			uint32 aem:1; // 60
 			// TODO
 		};
 
@@ -159,14 +161,15 @@ class GSRendererCL : public GSRenderer
 		GSVector4i scissor;
 		GSVector4i bbox;
 		GSVector4i rect;
-		GSVector4i dimx[4];
+		GSVector4i dimx; // 4x4 signed char
 		TFXSelector sel;
 		uint32 fbp, zbp, bw;
 		uint32 fm, zm;
-		int aref, afix;
 		uint32 fog; // rgb
-		uint16 minu, maxu; // umsk, ufix
-		uint16 minv, maxv; // vmsk, vfix
+		uint8 aref, afix;
+		uint8 ta0, ta1;
+		uint32 tbp[7], tbw[7];
+		int minu, maxu, minv, maxv; // umsk, ufix, vmsk, vfix
 		int lod; // lcm == 1
 		int mxl;
 		float l; // TEX1.L * -0x10000
@@ -190,15 +193,16 @@ class GSRendererCL : public GSRenderer
 		std::map<uint64, cl::Kernel> tfx_map;
 
 	public:
-		cl::Device device;
+		std::vector<cl::Device> devices;
 		cl::Context context;
 		cl::CommandQueue queue[3];
 		cl::Buffer vm;
+		cl::Buffer tex;
 		struct { cl::Buffer buff[2]; size_t head, tail, size; unsigned char* ptr; void* mapped_ptr; } vb, ib, pb;
 		cl::Buffer env;
 		cl::CommandQueue* wq;
 		int wqidx;
-		size_t CUs, WIs;
+		size_t WIs;
 
 	public:
 		CL();
@@ -280,6 +284,7 @@ protected:
 	uint8* m_output;
 
 	uint8 m_rw_pages[512]; // TODO: bit array for faster clearing (bit 0: write, bit 1: read)
+	uint8 m_tex_pages[512];
 	uint32 m_tmp_pages[512 + 1];
 
 	void Reset();

@@ -77,8 +77,9 @@ GSRendererCL::GSRendererCL()
 {
 	m_nativeres = true; // ignore ini, sw is always native
 
-//	s_dump = 1;
-//	s_save = 1;
+	//s_dump = 1;
+	//s_save = 1;
+	//s_savez = 1;
 
 	// TODO: m_tc = new GSTextureCacheCL(this);
 
@@ -87,6 +88,7 @@ GSRendererCL::GSRendererCL()
 	m_output = (uint8*)_aligned_malloc(1024 * 1024 * sizeof(uint32), 32);
 
 	memset(m_rw_pages, 0, sizeof(m_rw_pages));
+	memset(m_tex_pages, 0, sizeof(m_tex_pages));
 
 	#define InitCVB(P) \
 		m_cvb[P][0][0] = &GSRendererCL::ConvertVertexBuffer<P, 0, 0>; \
@@ -100,6 +102,7 @@ GSRendererCL::GSRendererCL()
 	InitCVB(GS_SPRITE_CLASS);
 
 	m_cl.vm = cl::Buffer(m_cl.context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, (size_t)m_mem.m_vmsize, m_mem.m_vm8, NULL);
+	m_cl.tex = cl::Buffer(m_cl.context, CL_MEM_READ_WRITE, (size_t)m_mem.m_vmsize);
 }
 
 GSRendererCL::~GSRendererCL()
@@ -131,7 +134,7 @@ void GSRendererCL::VSync(int field)
 
 	// TODO: m_tc->IncAge();
 
-	//memset(m_mem.m_vm8, 0, (size_t)m_mem.m_vmsize);
+	//if(!field) memset(m_mem.m_vm8, 0, (size_t)m_mem.m_vmsize);
 }
 
 void GSRendererCL::ResetDevice()
@@ -187,7 +190,7 @@ template<uint32 primclass, uint32 tme, uint32 fst>
 void GSRendererCL::ConvertVertexBuffer(GSVertexCL* RESTRICT dst, const GSVertex* RESTRICT src, size_t count)
 {
 	GSVector4i o = (GSVector4i)m_context->XYOFFSET;
-	GSVector4 st_scale = GSVector4(1 << m_context->TEX0.TW, 1 << m_context->TEX0.TH, 1, 0);
+	GSVector4 st_scale = GSVector4(16 << m_context->TEX0.TW, 16 << m_context->TEX0.TH, 1, 0);
 
 	for(int i = (int)m_vertex.next; i > 0; i--, src++, dst++)
 	{
@@ -219,11 +222,11 @@ void GSRendererCL::ConvertVertexBuffer(GSVertexCL* RESTRICT dst, const GSVertex*
 			{
 				#if _M_SSE >= 0x401
 
-				t = GSVector4(xyzuvf.uph16()) * g_pos_scale;
+				t = GSVector4(xyzuvf.uph16());
 					
 				#else
 
-				t = GSVector4(GSVector4i::load(src->UV).upl16()) * g_pos_scale;
+				t = GSVector4(GSVector4i::load(src->UV).upl16());
 
 				#endif
 			}
@@ -261,10 +264,42 @@ void GSRendererCL::Draw()
 		return;
 	}
 
+	if(s_dump)
+	{
+		Sync(2);
+
+		uint64 frame = m_perfmon.GetFrame();
+
+		std::string s;
+
+		if(s_save && s_n >= s_saven && PRIM->TME)
+		{
+			s = format("c:\\temp1\\_%05d_f%lld_tex_%05x_%d.bmp", s_n, frame, (int)m_context->TEX0.TBP0, (int)m_context->TEX0.PSM);
+
+			m_mem.SaveBMP(s, m_context->TEX0.TBP0, m_context->TEX0.TBW, m_context->TEX0.PSM, 1 << m_context->TEX0.TW, 1 << m_context->TEX0.TH);
+		}
+
+		s_n++;
+
+		if(s_save && s_n >= s_saven)
+		{
+			s = format("c:\\temp1\\_%05d_f%lld_rt0_%05x_%d.bmp", s_n, frame, m_context->FRAME.Block(), m_context->FRAME.PSM);
+
+			m_mem.SaveBMP(s, m_context->FRAME.Block(), m_context->FRAME.FBW, m_context->FRAME.PSM, GetFrameRect().width(), 512);
+		}
+
+		if(s_savez && s_n >= s_saven)
+		{
+			s = format("c:\\temp1\\_%05d_f%lld_rz0_%05x_%d.bmp", s_n, frame, m_context->ZBUF.Block(), m_context->ZBUF.PSM);
+
+			m_mem.SaveBMP(s, m_context->ZBUF.Block(), m_context->FRAME.FBW, m_context->ZBUF.PSM, GetFrameRect().width(), 512);
+		}
+
+		s_n++;
+	}
+
 	try
 	{
-		// simplified texture cache idea: mirror 4 MB vmem in cl::Buffer, track rendered pages, update invalidated texture pages as needed, the kernel does the unswizzling of each texel
-
 		size_t vb_size = m_vertex.next * sizeof(GSVertexCL);
 		size_t ib_size = m_index.tail * sizeof(uint32);
 		size_t pb_size = sizeof(TFXParameter);
@@ -312,6 +347,8 @@ void GSRendererCL::Draw()
 
 				m_cl.queue[2].enqueueMarkerWithWaitList(NULL, &el[0]);
 				m_cl.wq->enqueueBarrierWithWaitList(&el, NULL);
+
+				// switch to the other queue/buffer (double buffering)
 
 				m_cl.wqidx = (m_cl.wqidx + 1) & 1;
 				m_cl.wq = &m_cl.queue[m_cl.wqidx];
@@ -478,6 +515,31 @@ void GSRendererCL::Draw()
 
 		return;
 	}
+
+	if(s_dump)
+	{
+		Sync(2);
+
+		uint64 frame = m_perfmon.GetFrame();
+		
+		std::string s;
+
+		if(s_save && s_n >= s_saven)
+		{
+			s = format("c:\\temp1\\_%05d_f%lld_rt1_%05x_%d.bmp", s_n, frame, m_context->FRAME.Block(), m_context->FRAME.PSM);
+
+			m_mem.SaveBMP(s, m_context->FRAME.Block(), m_context->FRAME.FBW, m_context->FRAME.PSM, GetFrameRect().width(), 512);
+		}
+
+		if(s_savez && s_n >= s_saven)
+		{
+			s = format("c:\\temp1\\_%05d_f%lld_rz1_%05x_%d.bmp", s_n, frame, m_context->ZBUF.Block(), m_context->ZBUF.PSM);
+
+			m_mem.SaveBMP(s, m_context->ZBUF.Block(), m_context->FRAME.FBW, m_context->ZBUF.PSM, GetFrameRect().width(), 512);
+		}
+
+		s_n++;
+	}
 }
 
 void GSRendererCL::Sync(int reason)
@@ -491,6 +553,7 @@ void GSRendererCL::Sync(int reason)
 	m_cl.queue[2].finish();
 
 	memset(m_rw_pages, 0, sizeof(m_rw_pages));
+	memset(m_tex_pages, 0, sizeof(m_tex_pages));	
 
 	// TODO: sync buffers created with CL_MEM_USE_HOST_PTR (on m_mem.m_vm8) by a simple map/unmap, 
 	// though it does not seem to be necessary even with GPU devices where it might be cached, 
@@ -508,7 +571,7 @@ void GSRendererCL::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const GS
 
 	o->GetPages(r, m_tmp_pages);
 
-	if(m_cl.pb.head < m_cl.pb.tail)
+	//if(!synced)
 	{
 		for(uint32* RESTRICT p = m_tmp_pages; *p != GSOffset::EOP; p++)
 		{
@@ -521,14 +584,17 @@ void GSRendererCL::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const GS
 		}
 	}
 
-	// TODO: invalidate texture cache pages by m_tmp_pages
+	for(uint32* RESTRICT p = m_tmp_pages; *p != GSOffset::EOP; p++)
+	{
+		m_tex_pages[*p] = 1;
+	}
 }
 
 void GSRendererCL::InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r, bool clut)
 {
 	if(LOG) {fprintf(s_fp, "%s %05x %d %d, %d %d %d %d\n", clut ? "rp" : "r", BITBLTBUF.SBP, BITBLTBUF.SBW, BITBLTBUF.SPSM, r.x, r.y, r.z, r.w); fflush(s_fp);}
 	
-	if(m_cl.pb.head < m_cl.pb.tail)
+	//if(!synced)
 	{
 		GSOffset* o = m_mem.GetOffset(BITBLTBUF.SBP, BITBLTBUF.SBW, BITBLTBUF.SPSM);
 
@@ -659,12 +725,13 @@ void GSRendererCL::Enqueue()
 				auto job = next++;
 
 				uint32 cur_prim_count = job->ib_count / n;
+				uint32 next_prim_count = next != m_jobs.end() ? next->ib_count / n : 0;
 
 				total_prim_count += cur_prim_count;
 
-				if(total_prim_count >= MAX_PRIM_COUNT || next == m_jobs.end())
+				if(total_prim_count >= MAX_PRIM_COUNT || next == m_jobs.end())// || next_prim_count >= MAX_PRIM_COUNT || next_prim_count < 16 && total_prim_count >= MAX_PRIM_COUNT / 2)
 				{
-					uint32 prim_count = std::min(total_prim_count, MAX_PRIM_COUNT);
+					uint32 prim_count = std::min(total_prim_count, MAX_PRIM_COUNT);					
 
 					pk.setArg(3, (cl_uint)m_vb_start);
 					pk.setArg(4, (cl_uint)head->ib_start);
@@ -737,7 +804,7 @@ void GSRendererCL::Enqueue()
 						else
 						{
 							uint32 item_count = std::min(bin_count, m_cl.WIs);
-							uint32 group_count = std::min(batch_count, m_cl.CUs) * item_count;
+							uint32 group_count = batch_count * item_count;
 
 							tk.setArg(1, (cl_uint)prim_count);
 							tk.setArg(2, (cl_uint)batch_count);
@@ -764,43 +831,40 @@ void GSRendererCL::Enqueue()
 
 						uint32 prim_count_inner = std::min(i->ib_count / n, MAX_PRIM_COUNT - prim_start);
 
-						// TODO: update the needed pages of the texture cache buffer with enqueueCopyBuffer (src=this->vm),
+						// TODO: update the needed pages of the texture cache buffer with enqueueCopyBuffer (src=this->vm, dst=this->vm_text),
 						// changed by tfx in the previous loop or marked by InvalidateVideoMem
 
 						// TODO: tile level z test
-
-						// TODO: merge sequential tfx calls having the same i->sel and texture and no dependencies, and pass the param index for each prim in the prim buffer (set by pk earlier)
 
 						cl::Kernel& tfx = m_cl.GetTFXKernel(i->sel);
 
 						if(tfx_prev != tfx())
 						{
-							tfx.setArg(2, sizeof(m_cl.pb.buff[m_cl.wqidx]), &m_cl.pb.buff[m_cl.wqidx]);
+							tfx.setArg(3, sizeof(m_cl.pb.buff[m_cl.wqidx]), &m_cl.pb.buff[m_cl.wqidx]);
 
 							tfx_prev = tfx();
 						}
 
-						tfx.setArg(3, (cl_uint)i->pb_start);
-						tfx.setArg(4, (cl_uint)prim_start);
-						tfx.setArg(5, (cl_uint)prim_count_inner);
-						tfx.setArg(6, (cl_uint)batch_count);
-						tfx.setArg(7, (cl_uint)bin_count);
-						tfx.setArg(8, bin_dim);
+						tfx.setArg(4, (cl_uint)i->pb_start);
+						tfx.setArg(5, (cl_uint)prim_start);
+						tfx.setArg(6, (cl_uint)prim_count_inner);
+						tfx.setArg(7, (cl_uint)batch_count);
+						tfx.setArg(8, (cl_uint)bin_count);
+						tfx.setArg(9, bin_dim);
 
 						//m_cl.queue[2].enqueueNDRangeKernel(tfx, cl::NullRange, cl::NDRange(std::min(bin_count * 4, CUs) * 256), cl::NDRange(256));
-
-						// TODO: limit to i->rect
 
 						//printf("%d %d %d %d\n", rect.width() << BIN_SIZE_BITS, rect.height() << BIN_SIZE_BITS, i->rect.z - i->rect.x, i->rect.w - i->rect.y);
 
 						GSVector4i r = GSVector4i::load<false>(&i->rect);
 
 						r = r.ralign<Align_Outside>(GSVector2i(BIN_SIZE, BIN_SIZE));
-
+						/*
 						if(i->sel.IsSolidRect()) // TODO: simple mem fill
 							;//printf("%d %d %d %d\n", r.left, r.top, r.width(), r.height());
 						else
-							m_cl.queue[2].enqueueNDRangeKernel(tfx, cl::NDRange(r.left, r.top), cl::NDRange(r.width(), r.height()), cl::NDRange(16, 16));
+						*/
+						m_cl.queue[2].enqueueNDRangeKernel(tfx, cl::NDRange(r.left, r.top), cl::NDRange(r.width(), r.height()), cl::NDRange(16, 16));
 
 						// TODO: invalidate texture cache pages
 
@@ -842,6 +906,29 @@ void GSRendererCL::Enqueue()
 	m_cl.Map();
 }
 
+static int RemapPSM(int psm)
+{
+	switch(psm)
+	{
+	default:
+	case PSM_PSMCT32: psm = 0; break;
+	case PSM_PSMCT24: psm = 1; break;
+	case PSM_PSMCT16: psm = 2; break;
+	case PSM_PSMCT16S: psm = 3; break;
+	case PSM_PSMZ32: psm = 4; break;
+	case PSM_PSMZ24: psm = 5; break;
+	case PSM_PSMZ16: psm = 6; break;
+	case PSM_PSMZ16S: psm = 7; break;
+	case PSM_PSMT8: psm = 8; break;
+	case PSM_PSMT4: psm = 9; break;
+	case PSM_PSMT8H: psm = 10; break;
+	case PSM_PSMT4HL: psm = 11; break;
+	case PSM_PSMT4HH: psm = 12; break;
+	}
+
+	return psm;
+}
+
 bool GSRendererCL::SetupParameter(TFXParameter* pb, GSVertexCL* vertex, size_t vertex_count, const uint32* index, size_t index_count)
 {
 	const GSDrawingEnvironment& env = m_env;
@@ -878,53 +965,65 @@ bool GSRendererCL::SetupParameter(TFXParameter* pb, GSVertexCL* vertex, size_t v
 		{
 			pb->sel.atst = context->TEST.ATST;
 			pb->sel.afail = context->TEST.AFAIL;
-
-			pb->aref = (int)context->TEST.AREF;
-
-			switch(pb->sel.atst)
-			{
-			case ATST_LESS:
-				pb->sel.atst = ATST_LEQUAL;
-				pb->aref -= 1;
-				break;
-			case ATST_GREATER:
-				pb->sel.atst = ATST_GEQUAL;
-				pb->aref += 1;
-				break;
-			}
+			pb->aref = context->TEST.AREF;
 		}
 	}
 
-	bool fwrite = fm != 0xffffffff;
-	bool ftest = pb->sel.atst != ATST_ALWAYS || context->TEST.DATE && context->FRAME.PSM != PSM_PSMCT24;
+	bool fwrite;
+	bool zwrite;
+	
+	switch(context->FRAME.PSM)
+	{
+	default:
+	case PSM_PSMCT32:
+	case PSM_PSMZ32:
+		fwrite = fm != 0xffffffff;
+		break;
+	case PSM_PSMCT24:
+	case PSM_PSMZ24:
+		fwrite = (fm & 0x00ffffff) != 0x00ffffff;
+		break;
+	case PSM_PSMCT16:
+	case PSM_PSMCT16S:
+	case PSM_PSMZ16:
+	case PSM_PSMZ16S:
+		fwrite = (fm & 0x80f8f8f8) != 0x80f8f8f8;
+		break;
+	}
 
-	bool zwrite = zm != 0xffffffff;
-	bool ztest = context->TEST.ZTE && context->TEST.ZTST > ZTST_ALWAYS;
-	
-	//printf("%05x %d %05x %d %05x %d %dx%d\n", 
-		//fwrite || ftest ? m_context->FRAME.Block() : 0xfffff, m_context->FRAME.PSM,
-		//zwrite || ztest ? m_context->ZBUF.Block() : 0xfffff, m_context->ZBUF.PSM,
-		//PRIM->TME ? m_context->TEX0.TBP0 : 0xfffff, m_context->TEX0.PSM, (int)m_context->TEX0.TW, (int)m_context->TEX0.TH);
-	
+	switch(context->ZBUF.PSM)
+	{
+	default:
+	case PSM_PSMCT32:
+	case PSM_PSMZ32:
+		zwrite = zm != 0xffffffff;
+		break;
+	case PSM_PSMCT24:
+	case PSM_PSMZ24:
+		zwrite = (zm & 0x00ffffff) != 0x00ffffff;
+		break;
+	case PSM_PSMCT16:
+	case PSM_PSMCT16S:
+	case PSM_PSMZ16:
+	case PSM_PSMZ16S:
+		zm &= 0x80f8f8f8;
+		zwrite = (zm & 0x80f8f8f8) != 0x80f8f8f8;
+		break;
+	}
+
 	if(!fwrite && !zwrite) return false;
+
+	bool ftest = pb->sel.atst != ATST_ALWAYS || context->TEST.DATE && context->FRAME.PSM != PSM_PSMCT24;
+	bool ztest = context->TEST.ZTE && context->TEST.ZTST > ZTST_ALWAYS;
 
 	pb->sel.fwrite = fwrite;
 	pb->sel.ftest = ftest;
+	pb->sel.zwrite = zwrite;
+	pb->sel.ztest = ztest;
 
 	if(fwrite || ftest)
 	{
-		switch(context->FRAME.PSM)
-		{
-		default:
-		case PSM_PSMCT32: pb->sel.fpsm = 0; break;
-		case PSM_PSMCT24: pb->sel.fpsm = 1; break;
-		case PSM_PSMCT16: pb->sel.fpsm = 2; break;
-		case PSM_PSMCT16S: pb->sel.fpsm = 3; break;
-		case PSM_PSMZ32: pb->sel.fpsm = 4; break;
-		case PSM_PSMZ24: pb->sel.fpsm = 5; break;
-		case PSM_PSMZ16: pb->sel.fpsm = 6; break;
-		case PSM_PSMZ16S: pb->sel.fpsm = 7; break;
-		}
+		pb->sel.fpsm = RemapPSM(context->FRAME.PSM);
 
 		if((primclass == GS_LINE_CLASS || primclass == GS_TRIANGLE_CLASS) && m_vt.m_eq.rgba != 0xffff)
 		{
@@ -937,6 +1036,13 @@ bool GSRendererCL::SetupParameter(TFXParameter* pb, GSVertexCL* vertex, size_t v
 			pb->sel.tcc = context->TEX0.TCC;
 			pb->sel.fst = PRIM->FST;
 			pb->sel.ltf = m_vt.IsLinear();
+			pb->sel.tpsm = RemapPSM(context->TEX0.PSM);
+			pb->sel.aem = m_env.TEXA.AEM;
+
+			pb->tbp[0] = context->TEX0.TBP0;
+			pb->tbw[0] = context->TEX0.TBW;
+			pb->ta0 = m_env.TEXA.TA0;
+			pb->ta1 = m_env.TEXA.TA1;
 
 			if(GSLocalMemory::m_psm[context->TEX0.PSM].pal > 0)
 			{
@@ -966,6 +1072,8 @@ bool GSRendererCL::SetupParameter(TFXParameter* pb, GSVertexCL* vertex, size_t v
 			// TODO: data->SetSource(t, r, 0);
 
 			// TODO: pb->sel.tw = t->m_tw - 3;
+
+			// TODO: store r to current job
 
 			if(m_mipmap && context->TEX1.MXL > 0 && context->TEX1.MMIN >= 2 && context->TEX1.MMIN <= 5 && m_vt.m_lod.y > 0)
 			{
@@ -1073,6 +1181,9 @@ bool GSRendererCL::SetupParameter(TFXParameter* pb, GSVertexCL* vertex, size_t v
 						__assume(0);
 					}
 
+					pb->tbp[i] = MIP_TEX0.TBP0;
+					pb->tbw[i] = MIP_TEX0.TBW;
+
 					if(MIP_TEX0.TW > 0) MIP_TEX0.TW--;
 					if(MIP_TEX0.TH > 0) MIP_TEX0.TH--;
 
@@ -1093,6 +1204,8 @@ bool GSRendererCL::SetupParameter(TFXParameter* pb, GSVertexCL* vertex, size_t v
 					GetTextureMinMax(r, MIP_TEX0, MIP_CLAMP, pb->sel.ltf);
 
 					// TODO: data->SetSource(t, r, i);
+
+					// TODO: store r to current job
 				}
 
 				s_counter++;
@@ -1149,7 +1262,7 @@ bool GSRendererCL::SetupParameter(TFXParameter* pb, GSVertexCL* vertex, size_t v
 
 					// TODO: but not when mipmapping is used!!!
 
-					GSVector4 half(0.5f, 0.5f);
+					GSVector4 half(8.0f, 8.0f);
 
 					GSVertexCL* RESTRICT v = vertex;
 
@@ -1162,8 +1275,8 @@ bool GSRendererCL::SetupParameter(TFXParameter* pb, GSVertexCL* vertex, size_t v
 				}
 			}
 
-			uint16 tw = 1u << context->TEX0.TW;
-			uint16 th = 1u << context->TEX0.TH;
+			int tw = 1 << context->TEX0.TW;
+			int th = 1 << context->TEX0.TH;
 
 			switch(context->CLAMP.WMS)
 			{
@@ -1178,13 +1291,13 @@ bool GSRendererCL::SetupParameter(TFXParameter* pb, GSVertexCL* vertex, size_t v
 				//gd.t.mask.u32[0] = 0;
 				break;
 			case CLAMP_REGION_CLAMP:
-				pb->minu = std::min<uint16>(context->CLAMP.MINU, tw - 1);
-				pb->maxu = std::min<uint16>(context->CLAMP.MAXU, tw - 1);
+				pb->minu = std::min((int)context->CLAMP.MINU, tw - 1);
+				pb->maxu = std::min((int)context->CLAMP.MAXU, tw - 1);
 				//gd.t.mask.u32[0] = 0;
 				break;
 			case CLAMP_REGION_REPEAT:
-				pb->minu = context->CLAMP.MINU & (tw - 1);
-				pb->maxu = context->CLAMP.MAXU & (tw - 1);
+				pb->minu = (int)context->CLAMP.MINU & (tw - 1);
+				pb->maxu = (int)context->CLAMP.MAXU & (tw - 1);
 				//gd.t.mask.u32[0] = 0xffffffff;
 				break;
 			default:
@@ -1204,13 +1317,13 @@ bool GSRendererCL::SetupParameter(TFXParameter* pb, GSVertexCL* vertex, size_t v
 				//gd.t.mask.u32[2] = 0;
 				break;
 			case CLAMP_REGION_CLAMP:
-				pb->minv = std::min<uint16>(context->CLAMP.MINV, th - 1);
-				pb->maxv = std::min<uint16>(context->CLAMP.MAXV, th - 1); // ffx anima summon scene, when the anchor appears (th = 256, maxv > 256)
+				pb->minv = std::min((int)context->CLAMP.MINV, th - 1);
+				pb->maxv = std::min((int)context->CLAMP.MAXV, th - 1); // ffx anima summon scene, when the anchor appears (th = 256, maxv > 256)
 				//gd.t.mask.u32[2] = 0;
 				break;
 			case CLAMP_REGION_REPEAT:
-				pb->minv = context->CLAMP.MINV & (th - 1); // skygunner main menu water texture 64x64, MINV = 127
-				pb->maxv = context->CLAMP.MAXV & (th - 1);
+				pb->minv = (int)context->CLAMP.MINV & (th - 1); // skygunner main menu water texture 64x64, MINV = 127
+				pb->maxv = (int)context->CLAMP.MAXV & (th - 1);
 				//gd.t.mask.u32[2] = 0xffffffff;
 				break;
 			default:
@@ -1251,9 +1364,9 @@ bool GSRendererCL::SetupParameter(TFXParameter* pb, GSVertexCL* vertex, size_t v
 		if(pb->sel.date
 		|| pb->sel.aba == 1 || pb->sel.abb == 1 || pb->sel.abc == 1 || pb->sel.abd == 1
 		|| pb->sel.atst != ATST_ALWAYS && pb->sel.afail == AFAIL_RGB_ONLY
-		|| (pb->sel.fpsm & 3) == 0 && fm != 0 && fm != 0xffffffff
-		|| (pb->sel.fpsm & 3) == 1 && (fm & 0x00ffffff) != 0 && (fm & 0x00ffffff) != 0x00ffffff
-		|| (pb->sel.fpsm & 3) >= 2 && (fm & 0x80f8f8f8) != 0 && (fm & 0x80f8f8f8) != 0x80f8f8f8)
+		|| (pb->sel.fpsm & 3) == 0 && fwrite && fm != 0
+		|| (pb->sel.fpsm & 3) == 1 && fwrite // always read-merge-write 24bpp, regardless the mask
+		|| (pb->sel.fpsm & 3) >= 2 && fwrite && (fm & 0x80f8f8f8) != 0)
 		{
 			pb->sel.rfb = 1;
 		}
@@ -1265,31 +1378,18 @@ bool GSRendererCL::SetupParameter(TFXParameter* pb, GSVertexCL* vertex, size_t v
 		{
 			pb->sel.dthe = 1;
 
-			pb->dimx[0] = env.dimx[1].sll32(16).sra32(16);
-			pb->dimx[1] = env.dimx[3].sll32(16).sra32(16);
-			pb->dimx[2] = env.dimx[5].sll32(16).sra32(16);
-			pb->dimx[3] = env.dimx[7].sll32(16).sra32(16);
+			GSVector4i dimx0 = env.dimx[1].sll32(16).sra32(16);
+			GSVector4i dimx1 = env.dimx[3].sll32(16).sra32(16);
+			GSVector4i dimx2 = env.dimx[5].sll32(16).sra32(16);
+			GSVector4i dimx3 = env.dimx[7].sll32(16).sra32(16);
+
+			pb->dimx = dimx0.ps32(dimx1).ps16(dimx2.ps32(dimx3));
 		}
 	}
 
-	pb->sel.zwrite = zwrite;
-	pb->sel.ztest = ztest;
-
 	if(zwrite || ztest)
 	{
-		switch(context->ZBUF.PSM)
-		{
-		case PSM_PSMCT32: pb->sel.zpsm = 0; break;
-		case PSM_PSMCT24: pb->sel.zpsm = 1; break;
-		case PSM_PSMCT16: pb->sel.zpsm = 2; break;
-		case PSM_PSMCT16S: pb->sel.zpsm = 3; break;
-		default:
-		case PSM_PSMZ32: pb->sel.zpsm = 4; break;
-		case PSM_PSMZ24: pb->sel.zpsm = 5; break;
-		case PSM_PSMZ16: pb->sel.zpsm = 6; break;
-		case PSM_PSMZ16S: pb->sel.zpsm = 7; break;
-		}
-
+		pb->sel.zpsm = RemapPSM(context->ZBUF.PSM);
 		pb->sel.ztst = ztest ? context->TEST.ZTST : ZTST_ALWAYS;
 		pb->sel.zoverflow = GSVector4i(m_vt.m_max.p).z == 0x80000000;
 	}
@@ -1318,11 +1418,9 @@ bool GSRendererCL::SetupParameter(TFXParameter* pb, GSVertexCL* vertex, size_t v
 		pb->zm |= 0xffff0000;
 	}
 
-	if(pb->sel.prim == GS_SPRITE_CLASS && !pb->sel.ftest && !pb->sel.ztest && pb->bbox.eq(pb->bbox.rintersect(pb->scissor)))
+	if(pb->bbox.eq(pb->bbox.rintersect(pb->scissor)))
 	{
-		pb->sel.notest = 1;
-
-		uint32 ofx = context->XYOFFSET.OFX;
+		pb->sel.noscissor = 1;
 	}
 
 	pb->fbp = context->FRAME.Block();
@@ -1338,58 +1436,69 @@ bool GSRendererCL::SetupParameter(TFXParameter* pb, GSVertexCL* vertex, size_t v
 
 GSRendererCL::CL::CL()
 {
-#ifdef IOCL_DEBUG
+	WIs = INT_MAX;
+
 	std::vector<cl::Platform> platforms;
 
 	cl::Platform::get(&platforms);
 
 	for(auto& p : platforms)
 	{
-		std::string vendor = p.getInfo<CL_PLATFORM_VENDOR>();
+		std::string platform_vendor = p.getInfo<CL_PLATFORM_VENDOR>();
 
-		printf("%s\n", vendor.c_str());
+		std::vector<cl::Device> ds;
 
-		std::vector<cl::Device> devices;
+		p.getDevices(CL_DEVICE_TYPE_ALL, &ds);
 
-		p.getDevices(CL_DEVICE_TYPE_ALL, &devices);
-
-		for(auto& d : devices)
+		for(auto& device : ds)
 		{
-			cl_device_type type = d.getInfo<CL_DEVICE_TYPE>();
+			std::string vendor = device.getInfo<CL_DEVICE_VENDOR>();
+			std::string name = device.getInfo<CL_DEVICE_NAME>();
+			std::string version = device.getInfo<CL_DEVICE_OPENCL_C_VERSION>();
+
+			printf("%s %s %s", vendor.c_str(), name.c_str(), version.c_str());
+
+			cl_device_type type = device.getInfo<CL_DEVICE_TYPE>();
 
 			switch(type)
 			{
-			case CL_DEVICE_TYPE_GPU: printf("GPU\n"); break;
-			case CL_DEVICE_TYPE_CPU: printf("CPU\n"); break;
+			case CL_DEVICE_TYPE_GPU: printf(" GPU"); break;
+			case CL_DEVICE_TYPE_CPU: printf(" CPU"); break;
 			}
 
-			if(type == CL_DEVICE_TYPE_CPU && strstr(vendor.c_str(), "Intel") != NULL)
+			if(strstr(version.c_str(), "OpenCL C 1.2") != NULL)
 			{
-				device = d;
-				context = cl::Context(device);
-			}
-		}
-	}
+#ifdef IOCL_DEBUG
+				if(type == CL_DEVICE_TYPE_CPU && strstr(platform_vendor.c_str(), "Intel") != NULL)
 #else
-	context = cl::Context(CL_DEVICE_TYPE_GPU);
-	//context = cl::Context(CL_DEVICE_TYPE_CPU);
-	//context = cl::Context(CL_DEVICE_TYPE_DEFAULT);
+				//if(type == CL_DEVICE_TYPE_GPU && strstr(platform_vendor.c_str(), "Intel") != NULL)
+				if(type == CL_DEVICE_TYPE_GPU && strstr(platform_vendor.c_str(), "Advanced Micro Devices") != NULL)
+#endif
+				{
+					devices.push_back(device);
 
-	std::vector<cl::Device> devices = context.getInfo<CL_CONTEXT_DEVICES>();
+					WIs = std::min(WIs, device.getInfo<CL_DEVICE_MAX_WORK_GROUP_SIZE>());
+
+					printf(" *");
+				}
+			}
+
+			printf("\n");
+		}
+
+		if(!devices.empty()) break;
+	}
 
 	if(devices.empty())
 	{
 		throw new std::exception("OpenCL device not found");
 	}
 
-	device = devices[0];
-#endif
-	CUs = device.getInfo<CL_DEVICE_MAX_COMPUTE_UNITS>();
-	WIs = device.getInfo<CL_DEVICE_MAX_WORK_GROUP_SIZE>();
+	context = cl::Context(devices);
 
-	queue[0] = cl::CommandQueue(context, device);
-	queue[1] = cl::CommandQueue(context, device);
-	queue[2] = cl::CommandQueue(context, device);
+	queue[0] = cl::CommandQueue(context);
+	queue[1] = cl::CommandQueue(context);
+	queue[2] = cl::CommandQueue(context);
 
 	vector<unsigned char> buff;
 
@@ -1504,9 +1613,15 @@ cl::Kernel& GSRendererCL::CL::GetPrimKernel(const PrimSelector& sel)
 	}
 	catch(cl::Error err)
 	{
-		auto s = program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device);
+		if(err.err() == CL_BUILD_PROGRAM_FAILURE)
+		{
+			for(auto device : devices)
+			{
+				auto s = program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device);
 
-		printf("kernel (%s) build error: %s\n", entry, s.c_str());
+				printf("kernel (%s) build error: %s\n", entry, s.c_str());
+			}
+		}
 
 		throw err;
 	}
@@ -1550,9 +1665,15 @@ cl::Kernel& GSRendererCL::CL::GetTileKernel(const TileSelector& sel)
 	}
 	catch(cl::Error err)
 	{
-		auto s = program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device);
+		if(err.err() == CL_BUILD_PROGRAM_FAILURE)
+		{
+			for(auto device : devices)
+			{
+				auto s = program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device);
 
-		printf("kernel (%s) build error: %s\n", entry, s.c_str());
+				printf("kernel (%s) build error: %s\n", entry, s.c_str());
+			}
+		}
 
 		throw err;
 	}
@@ -1622,7 +1743,9 @@ cl::Kernel& GSRendererCL::CL::GetTFXKernel(const TFXSelector& sel)
 		opt << "-D TW=" << sel.tw << " ";
 		opt << "-D LCM=" << sel.lcm << " ";
 		opt << "-D MMIN=" << sel.mmin << " ";
-		opt << "-D NOTEST=" << sel.notest << " ";
+		opt << "-D NOSCISSOR=" << sel.noscissor << " ";
+		opt << "-D TPSM=" << sel.tpsm << " ";
+		opt << "-D AEM=" << sel.aem << " ";
 		opt << "-D FB=" << sel.fb << " ";
 		opt << "-D ZB=" << sel.zb << " ";
 
@@ -1632,9 +1755,15 @@ cl::Kernel& GSRendererCL::CL::GetTFXKernel(const TFXSelector& sel)
 	}
 	catch(cl::Error err)
 	{
-		auto s = program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device);
+		if(err.err() == CL_BUILD_PROGRAM_FAILURE)
+		{
+			for(auto device : devices)
+			{
+				auto s = program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device);
 
-		printf("kernel (%s) build error: %s\n", entry, s.c_str());
+				printf("kernel (%s) build error: %s\n", entry, s.c_str());
+			}
+		}
 
 		throw err;
 	}
@@ -1645,6 +1774,7 @@ cl::Kernel& GSRendererCL::CL::GetTFXKernel(const TFXSelector& sel)
 
 	k.setArg(0, env);
 	k.setArg(1, vm);
+	k.setArg(2, tex);
 
 	return tfx_map[sel];
 }
